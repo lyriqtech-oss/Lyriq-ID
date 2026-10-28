@@ -1,17 +1,35 @@
 # Lyriq ID
 
-Initial account and security center for the Lyriq ecosystem.
+Web app for a central Lyriq account. This repository contains a working account interface and security foundation, plus a separate visual preview of the reference design.
 
-## Run
+## Run locally
 
-Copy `.env.example` to `.env`, add your Supabase publishable/anon key, then run `npm start` with Node.js 20 or later. Open http://localhost:3000.
+Requires Node.js 24 or later. Copy `.env.example` to `.env`, set `SUPABASE_SERVER_KEY` and a stable random `APP_ENCRYPTION_KEY` (32 bytes encoded as base64url), then run:
 
-## Visual preview
+```sh
+npm start
+```
 
-Open `public/index.html` directly to view the three mobile screens without an account. The sample name, devices, sign-in request, security status, and rotating 30-second codes are illustrative only. These codes are not TOTP credentials and cannot authenticate any service. The preview labels itself and cannot approve real requests.
+Open **http://127.0.0.1:3000**. The file `public/index.html` opened directly uses sample data; it is a visual preview and does not connect to the server.
 
-## Current scope
+The provided Supabase key is kept in the local ignored `.env` file. Never commit it, expose it in browser code, or ship it in a client app. Rotate a key if it has been disclosed.
 
-Email and password account creation and sign in use Supabase Auth. The interface includes an account overview and clearly labels future security capabilities. Passkeys, OIDC, device/session inventory, approvals, and native mobile are not implemented yet. Do not use this prototype as a production identity provider.
+## Current functionality
 
-The Supabase service-role key must never be committed or exposed to the browser.
+- Supabase Auth email/password signup and sign-in; confirmation email follows project settings.
+- Server-side sessions in SQLite, with encrypted access and refresh tokens, HTTP-only SameSite cookies, seven-day maximum duration, session listing and revocation.
+- Supabase Auth TOTP enrollment and challenge at sign-in. Other local sessions are revoked after adding a factor.
+- Supabase Auth recovery-code generation after MFA enrollment, if enabled on the Supabase project. Codes appear once and are not stored by this app.
+- Four first-party Lyriq verification-code cards. Secrets are encrypted at rest; codes rotate every 30 seconds.
+- First-party code verification endpoint with a per-product server secret, one-time use, and rate limits.
+- Security events, account and session views, responsive layout.
+
+## Product integration
+
+Each Lyriq product needs a distinct `LYRIQ_CLIENT_<PRODUCT>_SECRET` on the Lyriq ID server. A product verifies a user-supplied code with `POST /api/codes/verify`, sending its secret as `Authorization: Bearer <secret>` and a JSON body of `{ "client_id": "waterwolf", "user_id": "...", "code": "123456" }`. Verification returns `{ "valid": true, "user_id": "...", "client_id": "..." }` once. This is a server-to-server endpoint; never place client secrets in browser or mobile code. No Lyriq products are connected yet, so the codes do not currently sign users into them.
+
+## Security and deployment limits
+
+This is **not a production identity provider yet**. Passkey login, OAuth/OIDC authorization, trusted-device enrollment, agent approvals, push approvals, organization policies, and account recovery flows remain to be implemented and audited. The app uses local SQLite for session and code metadata; moving it to managed PostgreSQL with backups is necessary before multi-instance deployment. Configure HTTPS, a trusted reverse proxy, separate environment secrets, Supabase Auth rate limits, MFA enrollment settings, backups, monitoring, and external security testing before real users depend on it. The local visual preview contains illustrative information only.
+
+Run `npm run check` for syntax and cryptographic unit tests.
