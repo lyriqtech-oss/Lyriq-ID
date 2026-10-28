@@ -6,6 +6,10 @@ Initial account and security center for the Lyriq ecosystem.
 
 Copy `.env.example` to `.env`, add your Supabase publishable/anon key, then run `npm start` with Node.js 20 or later. Open http://localhost:3000.
 
+## Visual preview
+
+Open `public/index.html` directly to view the mobile design without an account. The sample name, devices, sign-in request, and security status are illustrative only. The preview labels itself and cannot approve real requests.
+
 ## Current scope
 
 Email and password account creation and sign in use Supabase Auth. The interface includes an account overview and clearly labels future security capabilities. Passkeys, OIDC, device/session inventory, approvals, and native mobile are not implemented yet. Do not use this prototype as a production identity provider.
