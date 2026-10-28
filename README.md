@@ -8,7 +8,7 @@ Copy `.env.example` to `.env`, add your Supabase publishable/anon key, then run 
 
 ## Visual preview
 
-Open `public/index.html` directly to view the mobile design without an account. The sample name, devices, sign-in request, and security status are illustrative only. The preview labels itself and cannot approve real requests.
+Open `public/index.html` directly to view the three mobile screens without an account. The sample name, devices, sign-in request, security status, and rotating 30-second codes are illustrative only. These codes are not TOTP credentials and cannot authenticate any service. The preview labels itself and cannot approve real requests.
 
 ## Current scope
 
