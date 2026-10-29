@@ -29,7 +29,26 @@ const services = [{id:'waterwolf',name:'WaterWolf',letter:'W'},{id:'agentos',nam
 const event = (userId,kind,detail) => db.prepare('INSERT INTO security_events VALUES (?,?,?,?,?)').run(crypto.randomUUID(),userId,kind,detail,Date.now());
 function currentSession(req){ const id=cookies(req).lyriq_session; if(!id)return null; const row=db.prepare('SELECT * FROM sessions WHERE id_hash=? AND revoked_at IS NULL').get(sha256(id)); return row && Date.now()-row.created_at<7*86400000 ? row : null; }
 const verifiedFactors = user => (user?.factors||[]).filter(f=>f.status==='verified'&&f.factor_type==='totp');
-function accountState(row){ const now=Date.now(); const sessionRows=db.prepare('SELECT id_hash,created_at,last_seen,user_agent FROM sessions WHERE user_id=? AND revoked_at IS NULL ORDER BY last_seen DESC').all(row.user_id); const codes=services.map(service=>{let record=db.prepare('SELECT secret_enc FROM service_codes WHERE user_id=? AND service_id=?').get(row.user_id,service.id);if(!record){db.prepare('INSERT OR IGNORE INTO service_codes VALUES (?,?,?)').run(row.user_id,service.id,seal(crypto.randomBytes(32).toString('base64url'),encryptionKey));record=db.prepare('SELECT secret_enc FROM service_codes WHERE user_id=? AND service_id=?').get(row.user_id,service.id)}return {...service,code:totp(Buffer.from(unseal(record.secret_enc,encryptionKey),'base64url'))}});const authenticators=db.prepare('SELECT id,issuer,label,secret_enc,algorithm,digits,period FROM authenticator_entries WHERE user_id=? ORDER BY created_at').all(row.user_id).map(entry=>{const settings={...entry,secret:unseal(entry.secret_enc,encryptionKey)};return {id:entry.id,issuer:entry.issuer,label:entry.label,code:authenticatorCode(settings,now),period:entry.period,remaining:entry.period-Math.floor(now/1000)%entry.period}});return {user:{id:row.user_id,email:row.email},sessions:sessionRows.map(s=>({...s,id:s.id_hash,current:s.id_hash===row.id_hash})),codes,authenticators,expires_in:30-Math.floor(now/1000)%30,events:db.prepare('SELECT kind,detail,created_at FROM security_events WHERE user_id=? ORDER BY created_at DESC LIMIT 10').all(row.user_id)} }
+function accountState(row){
+  const sessions=db.prepare('SELECT id_hash,created_at,last_seen,user_agent FROM sessions WHERE user_id=? AND revoked_at IS NULL ORDER BY last_seen DESC').all(row.user_id);
+  return {user:{id:row.user_id,email:row.email},sessions:sessions.map(s=>({...s,id:s.id_hash,current:s.id_hash===row.id_hash})),events:db.prepare('SELECT kind,detail,created_at FROM security_events WHERE user_id=? ORDER BY created_at DESC LIMIT 10').all(row.user_id)};
+}
+function codeState(row){
+  const now=Date.now();
+  const codes=services.map(service=>{
+    let record=db.prepare('SELECT secret_enc FROM service_codes WHERE user_id=? AND service_id=?').get(row.user_id,service.id);
+    if(!record){
+      db.prepare('INSERT OR IGNORE INTO service_codes VALUES (?,?,?)').run(row.user_id,service.id,seal(crypto.randomBytes(32).toString('base64url'),encryptionKey));
+      record=db.prepare('SELECT secret_enc FROM service_codes WHERE user_id=? AND service_id=?').get(row.user_id,service.id);
+    }
+    return {...service,code:totp(Buffer.from(unseal(record.secret_enc,encryptionKey),'base64url'))};
+  });
+  const authenticators=db.prepare('SELECT id,issuer,label,secret_enc,algorithm,digits,period FROM authenticator_entries WHERE user_id=? ORDER BY created_at').all(row.user_id).map(entry=>{
+    const settings={...entry,secret:unseal(entry.secret_enc,encryptionKey)};
+    return {id:entry.id,issuer:entry.issuer,label:entry.label,code:authenticatorCode(settings,now),period:entry.period,remaining:entry.period-Math.floor(now/1000)%entry.period};
+  });
+  return {codes,authenticators,expires_in:30-Math.floor(now/1000)%30};
+}
 const send = (res, status, data, headers = {}) => { res.writeHead(status, { 'content-type':'application/json; charset=utf-8', 'cache-control':'no-store', 'x-content-type-options':'nosniff', 'x-frame-options':'DENY', 'referrer-policy':'no-referrer', 'permissions-policy':'camera=(), microphone=(), geolocation=()', ...(production?{'strict-transport-security':'max-age=31536000; includeSubDomains'}:{}), ...headers }); res.end(JSON.stringify(data)); };
 const cookies = req => Object.fromEntries((req.headers.cookie || '').split(';').map(x => x.trim().split('=').map(decodeURIComponent)).filter(x => x.length === 2));
 const body = async req => { let raw=''; for await (const chunk of req) { raw += chunk; if (raw.length > 8192) throw Error('Request too large'); } return JSON.parse(raw || '{}'); };
@@ -89,6 +108,7 @@ const server = http.createServer(async (req,res) => {
       if (req.method==='GET' && url.pathname==='/api/mfa/recovery') {const r=await callAuth('factors/recovery-codes',{headers:{Authorization:`Bearer ${unseal(session.access_enc,encryptionKey)}`}});return send(res,r.status,r.status<400?{total:r.data.total,remaining:r.data.remaining}:{error:r.data.message||'Recovery codes are not configured.'});}
       if (req.method==='POST' && url.pathname==='/api/mfa/recovery') {const r=await callAuth('factors/recovery-codes',{method:'POST',headers:{Authorization:`Bearer ${unseal(session.access_enc,encryptionKey)}`},body:'{}'});if(r.status<400)event(session.user_id,'recovery_codes','Recovery codes generated');return send(res,r.status,r.status<400?{codes:r.data.codes}:{error:r.data.message||'Could not generate recovery codes.'});}
       if (req.method==='GET' && url.pathname==='/api/state') {const info=await callAuth('user',{headers:{Authorization:`Bearer ${unseal(session.access_enc,encryptionKey)}`}});if(info.status>=400)return send(res,401,{error:'Could not verify your account.'});return send(res,200,{...accountState(session),mfa_enabled:verifiedFactors(info.data).length>0});}
+      if (req.method==='GET' && url.pathname==='/api/codes') {const info=await callAuth('user',{headers:{Authorization:`Bearer ${unseal(session.access_enc,encryptionKey)}`}});if(info.status>=400)return send(res,401,{error:'Could not verify your account.'});return send(res,200,codeState(session));}
       if (req.method==='POST' && url.pathname==='/api/sessions/revoke') { const data=await body(req),target=String(data.id||'');const found=db.prepare('SELECT id_hash FROM sessions WHERE id_hash=? AND user_id=? AND revoked_at IS NULL').get(target,session.user_id);if(!found)return send(res,404,{error:'Session not found.'});db.prepare('UPDATE sessions SET revoked_at=? WHERE id_hash=?').run(Date.now(),target);event(session.user_id,'session_revoked','A session was revoked');return send(res,200,{ok:true,current:target===session.id_hash},target===session.id_hash?{'set-cookie':sessionCookie(req,'',0)}:{}); }
       if (req.method==='POST' && url.pathname==='/api/sessions/revoke-all') { db.prepare('UPDATE sessions SET revoked_at=? WHERE user_id=? AND revoked_at IS NULL').run(Date.now(),session.user_id);event(session.user_id,'sessions_revoked','All sessions were revoked');return send(res,200,{ok:true},{'set-cookie':sessionCookie(req,'',0)}); }
       return send(res,404,{error:'Not found.'});

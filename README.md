@@ -22,9 +22,11 @@ The provided Supabase key is kept in the local ignored `.env` file. Never commit
 - Supabase Auth TOTP enrollment and challenge at sign-in. Other local sessions are revoked after adding a factor.
 - Supabase Auth recovery-code generation after MFA enrollment, if enabled on the Supabase project. Codes appear once and are not stored by this app.
 - Four first-party Lyriq verification-code cards. Secrets are encrypted at rest; codes rotate every 30 seconds.
+- Verification codes are returned only by the authenticated Codes endpoint when that screen is opened. The Home, Sessions, and Security responses contain no codes.
 - A separate authenticator vault for accounts added later by the user. It accepts Base32 setup keys and standard `otpauth://totp` links, supports SHA-1/SHA-256/SHA-512, six or eight digits, and 30 or 60 second periods. Secrets are encrypted at rest and are never returned by the API.
 - First-party code verification endpoint with a per-product server secret, one-time use, and rate limits.
 - Security events, account and session views, responsive layout.
+- Recent browser sessions appear on Home and in Devices & Sessions. Device and browser names come from the User-Agent header and are clearly labeled as unverified.
 
 ## Product integration
 
