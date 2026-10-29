@@ -7,6 +7,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import {DatabaseSync} from 'node:sqlite';
 
 const freePort = () => new Promise((resolve, reject) => {
   const socket = net.createServer();
@@ -64,7 +65,19 @@ test('account, rotating code, replay protection and session revocation', async t
   assert.equal(stateResponse.status,200);
   const state=await stateResponse.json();
   assert.equal(state.codes.length,4);
+  assert.deepEqual(state.authenticators,[]);
   assert.match(state.codes[0].code,/^\d{6}$/);
+  const added=await fetch(`${base}/api/authenticator/entries`,{method:'POST',headers:{cookie,'content-type':'application/json'},body:JSON.stringify({secret:'otpauth://totp/Example:alice%40example.com?secret=GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ&issuer=Example'})});
+  assert.equal(added.status,201);
+  const afterAdd=await (await fetch(`${base}/api/state`,{headers:{cookie}})).json();
+  assert.equal(afterAdd.authenticators.length,1);
+  assert.equal(afterAdd.authenticators[0].issuer,'Example');
+  assert.match(afterAdd.authenticators[0].code,/^\d{6}$/);
+  assert.equal('secret' in afterAdd.authenticators[0],false);
+  const stored=new DatabaseSync(path.join(directory,'test.sqlite'));
+  const encrypted=stored.prepare('SELECT secret_enc FROM authenticator_entries WHERE user_id=?').get('user-1').secret_enc;
+  stored.close();
+  assert.equal(encrypted.includes('GEZDGNBVGY3TQOJQ'),false);
   const verify=()=>fetch(`${base}/api/codes/verify`,{method:'POST',headers:{authorization:'Bearer test-client-secret','content-type':'application/json'},body:JSON.stringify({client_id:'waterwolf',user_id:'user-1',code:state.codes[0].code})});
   assert.equal((await verify()).status,200);
   assert.equal((await verify()).status,401);

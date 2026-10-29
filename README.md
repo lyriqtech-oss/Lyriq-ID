@@ -22,6 +22,7 @@ The provided Supabase key is kept in the local ignored `.env` file. Never commit
 - Supabase Auth TOTP enrollment and challenge at sign-in. Other local sessions are revoked after adding a factor.
 - Supabase Auth recovery-code generation after MFA enrollment, if enabled on the Supabase project. Codes appear once and are not stored by this app.
 - Four first-party Lyriq verification-code cards. Secrets are encrypted at rest; codes rotate every 30 seconds.
+- A separate authenticator vault for accounts added later by the user. It accepts Base32 setup keys and standard `otpauth://totp` links, supports SHA-1/SHA-256/SHA-512, six or eight digits, and 30 or 60 second periods. Secrets are encrypted at rest and are never returned by the API.
 - First-party code verification endpoint with a per-product server secret, one-time use, and rate limits.
 - Security events, account and session views, responsive layout.
 
@@ -32,6 +33,8 @@ Each Lyriq product needs a distinct `LYRIQ_CLIENT_<PRODUCT>_SECRET` on the Lyriq
 ## Security and deployment limits
 
 This is **not a production identity provider yet**. Passkey login, OAuth/OIDC authorization, trusted-device enrollment, agent approvals, push approvals, organization policies, and account recovery flows remain to be implemented and audited. The app uses local SQLite for session and code metadata; moving it to managed PostgreSQL with backups is necessary before multi-instance deployment. Configure HTTPS, a trusted reverse proxy, separate environment secrets, Supabase Auth rate limits, MFA enrollment settings, backups, monitoring, and external security testing before real users depend on it. The local visual preview contains illustrative information only.
+
+The new authenticator vault does not alter existing Supabase MFA factors or first-party Lyriq codes. It cannot supply the second factor required to open the same locked Lyriq ID session; that factor must remain available on another trusted device or in an independent authenticator until a device-bound Lyriq mobile app and recovery flow are implemented. Back up imported setup keys safely: this version does not export them after import.
 
 For an HTTPS reverse proxy on the same machine, set `NODE_ENV=production` and `TRUST_PROXY=1`. The server accepts its HTTPS forwarding header only from a loopback connection. Keep port 3000 private behind the proxy. Production requests without a verified HTTPS connection are rejected.
 
