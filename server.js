@@ -14,7 +14,7 @@ const supabase = process.env.SUPABASE_URL || 'https://nmiuvczigmuwuiptlnxp.supab
 const key = process.env.SUPABASE_SERVER_KEY || process.env.SUPABASE_ANON_KEY;
 const encryptionKey = process.env.APP_ENCRYPTION_KEY ? Buffer.from(process.env.APP_ENCRYPTION_KEY, 'base64url') : null;
 if (!encryptionKey || encryptionKey.length !== 32) throw Error('APP_ENCRYPTION_KEY must contain 32 random bytes in base64url format.');
-const db = new DatabaseSync(path.join(root, 'work', 'lyriq-id.sqlite'));
+const db = new DatabaseSync(process.env.LYRIQ_DB_PATH || path.join(root, 'work', 'lyriq-id.sqlite'));
 db.exec(`PRAGMA journal_mode=WAL;
 CREATE TABLE IF NOT EXISTS sessions(id_hash TEXT PRIMARY KEY,user_id TEXT NOT NULL,email TEXT NOT NULL,access_enc TEXT NOT NULL,refresh_enc TEXT NOT NULL,expires INTEGER NOT NULL,created_at INTEGER NOT NULL,last_seen INTEGER NOT NULL,user_agent TEXT NOT NULL,revoked_at INTEGER);
 CREATE INDEX IF NOT EXISTS sessions_user ON sessions(user_id,revoked_at);
@@ -31,13 +31,14 @@ const send = (res, status, data, headers = {}) => { res.writeHead(status, { 'con
 const cookies = req => Object.fromEntries((req.headers.cookie || '').split(';').map(x => x.trim().split('=').map(decodeURIComponent)).filter(x => x.length === 2));
 const body = async req => { let raw=''; for await (const chunk of req) { raw += chunk; if (raw.length > 8192) throw Error('Request too large'); } return JSON.parse(raw || '{}'); };
 const callAuth = async (route, options={}) => { const response = await fetch(`${supabase}/auth/v1/${route}`, { ...options, headers:{ apikey:key, 'content-type':'application/json', ...options.headers } }); const data=await response.json().catch(()=>({})); return {status:response.status, data}; };
-const secure = req => req.headers['x-forwarded-proto'] === 'https' || req.socket.encrypted;
+const trustedProxy = req => process.env.TRUST_PROXY === '1' && ['127.0.0.1','::1','::ffff:127.0.0.1'].includes(req.socket.remoteAddress);
+const secure = req => !!req.socket.encrypted || (trustedProxy(req) && req.headers['x-forwarded-proto'] === 'https');
 const sessionCookie = (req, value, maxAge) => `lyriq_session=${encodeURIComponent(value)}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${maxAge}${secure(req)||process.env.NODE_ENV==='production'?'; Secure':''}`;
 const rate = new Map();
 function limited(req,max=12) { const ip=typeof req==='string'?req:(req.socket.remoteAddress||'unknown'); const now=Date.now(); const hits=(rate.get(ip)||[]).filter(t=>now-t<60000); hits.push(now); rate.set(ip,hits); return hits.length>max; }
 const server = http.createServer(async (req,res) => {
   try {
-    if(production && !req.socket.encrypted && req.headers['x-forwarded-proto']!=='https') return send(res,400,{error:'HTTPS is required.'});
+    if(production && !secure(req)) return send(res,400,{error:'HTTPS is required.'});
     const url=new URL(req.url, 'http://localhost');
     if (url.pathname.startsWith('/api/')) {
       if (!key) return send(res,503,{error:'Configure the Supabase server key to enable accounts.'});
@@ -57,16 +58,16 @@ const server = http.createServer(async (req,res) => {
       }
       const session=currentSession(req);
       if (req.method==='POST' && ['/api/login','/api/signup'].includes(url.pathname)) {
-        if (limited(req)) return send(res,429,{error:'Too many attempts. Try again in a minute.'});
         const input=await body(req); const email=String(input.email||'').trim(); const password=String(input.password||'');
         if (!/^\S+@\S+\.\S+$/.test(email) || password.length<12) return send(res,400,{error:'Enter a valid email and a password of at least 12 characters.'});
+        if (limited(req) || limited(`account:${email.toLowerCase()}`,5)) return send(res,429,{error:'Too many attempts. Try again in a minute.'});
         const route=url.pathname==='/api/signup'?'signup':'token?grant_type=password';
         const result=await callAuth(route,{method:'POST',body:JSON.stringify({email,password})});
         if (result.status>=400) return send(res,result.status,{error:result.data.msg || result.data.error_description || result.data.message || 'Authentication failed.'});
         if (!result.data.access_token) return send(res,200,{message:'Check your email to confirm your account.'});
         const info=await callAuth('user',{headers:{Authorization:`Bearer ${result.data.access_token}`}});
         if(info.status>=400)return send(res,502,{error:'Could not verify account factors.'});
-        const factor=verifiedFactors(info.data)[0],id=randomId(),now=Date.now();db.prepare('INSERT INTO sessions(id_hash,user_id,email,access_enc,refresh_enc,expires,created_at,last_seen,user_agent,revoked_at,mfa_pending) VALUES (?,?,?,?,?,?,?,?,?,NULL,?)').run(sha256(id),result.data.user.id,result.data.user.email,seal(result.data.access_token,encryptionKey),seal(result.data.refresh_token,encryptionKey),now+(result.data.expires_in||3600)*1000,now,now,String(req.headers['user-agent']||'Unknown device').slice(0,180),factor?1:0);event(result.data.user.id,'sign_in',factor?'Password accepted; second factor required':'Signed in to Lyriq ID');
+        const factor=verifiedFactors(info.data)[0],id=randomId(),now=Date.now();if(session)db.prepare('UPDATE sessions SET revoked_at=? WHERE id_hash=?').run(now,session.id_hash);db.prepare('INSERT INTO sessions(id_hash,user_id,email,access_enc,refresh_enc,expires,created_at,last_seen,user_agent,revoked_at,mfa_pending) VALUES (?,?,?,?,?,?,?,?,?,NULL,?)').run(sha256(id),result.data.user.id,result.data.user.email,seal(result.data.access_token,encryptionKey),seal(result.data.refresh_token,encryptionKey),now+(result.data.expires_in||3600)*1000,now,now,String(req.headers['user-agent']||'Unknown device').slice(0,180),factor?1:0);event(result.data.user.id,'sign_in',factor?'Password accepted; second factor required':'Signed in to Lyriq ID');
         return send(res,200,{user:result.data.user,mfa_required:!!factor},{'set-cookie':sessionCookie(req,id,60*60*24*7)});
       }
       if (req.method==='POST' && url.pathname==='/api/logout') { if(session){db.prepare('UPDATE sessions SET revoked_at=? WHERE id_hash=?').run(Date.now(),session.id_hash);event(session.user_id,'sign_out','Signed out of a session')} return send(res,200,{ok:true},{'set-cookie':sessionCookie(req,'',0)}); }
@@ -78,7 +79,7 @@ const server = http.createServer(async (req,res) => {
       if (req.method==='POST' && url.pathname==='/api/mfa/challenge') { if(limited(req))return send(res,429,{error:'Too many attempts.'});const data=await body(req),factorId=String(data.factor_id||'');const info=await callAuth('user',{headers:{Authorization:`Bearer ${unseal(session.access_enc,encryptionKey)}`}});if(info.status>=400||!(info.data.factors||[]).some(f=>f.id===factorId&&f.factor_type==='totp'))return send(res,403,{error:'Factor not found.'});const r=await callAuth(`factors/${factorId}/challenge`,{method:'POST',headers:{Authorization:`Bearer ${unseal(session.access_enc,encryptionKey)}`},body:'{}'});return send(res,r.status,r.status<400?{challenge_id:r.data.id}:{error:r.data.message||'Could not start challenge.'}); }
       if (req.method==='POST' && url.pathname==='/api/mfa/verify') { if(limited(req))return send(res,429,{error:'Too many attempts.'});const data=await body(req),factorId=String(data.factor_id||''),challengeId=String(data.challenge_id||''),code=String(data.code||'');if(!/^[0-9a-f-]{36}$/i.test(factorId)||!/^[0-9a-f-]{36}$/i.test(challengeId)||!/^\d{6}$/.test(code))return send(res,400,{error:'Invalid verification request.'});const r=await callAuth(`factors/${factorId}/verify`,{method:'POST',headers:{Authorization:`Bearer ${unseal(session.access_enc,encryptionKey)}`},body:JSON.stringify({challenge_id:challengeId,code})});if(r.status>=400)return send(res,r.status,{error:r.data.message||'The code was not accepted.'});db.prepare('UPDATE sessions SET access_enc=?,refresh_enc=?,expires=?,mfa_pending=0 WHERE id_hash=?').run(seal(r.data.access_token,encryptionKey),seal(r.data.refresh_token,encryptionKey),Date.now()+(r.data.expires_in||3600)*1000,session.id_hash);if(!session.mfa_pending)db.prepare('UPDATE sessions SET revoked_at=? WHERE user_id=? AND id_hash<>? AND revoked_at IS NULL').run(Date.now(),session.user_id,session.id_hash);event(session.user_id,'mfa_verified',session.mfa_pending?'Second factor verified':'Second factor enrolled; other sessions revoked');return send(res,200,{ok:true}); }
       if(session.mfa_pending)return send(res,403,{error:'Complete second-factor verification.'});
-      if (req.method==='POST' && url.pathname==='/api/mfa/enroll') {const r=await callAuth('factors',{method:'POST',headers:{Authorization:`Bearer ${unseal(session.access_enc,encryptionKey)}`},body:JSON.stringify({factor_type:'totp',friendly_name:'Lyriq ID authenticator'})});return send(res,r.status,r.status<400?{factor_id:r.data.id,secret:r.data.totp?.secret,qr_code:r.data.totp?.qr_code}:{error:r.data.message||'Could not enroll a factor.'});}
+      if (req.method==='POST' && url.pathname==='/api/mfa/enroll') {if(limited(`enroll:${session.user_id}`,3))return send(res,429,{error:'Too many enrollment attempts.'});const r=await callAuth('factors',{method:'POST',headers:{Authorization:`Bearer ${unseal(session.access_enc,encryptionKey)}`},body:JSON.stringify({factor_type:'totp',friendly_name:'Lyriq ID authenticator'})});return send(res,r.status,r.status<400?{factor_id:r.data.id,secret:r.data.totp?.secret,qr_code:r.data.totp?.qr_code}:{error:r.data.message||'Could not enroll a factor.'});}
       if (req.method==='DELETE' && url.pathname.startsWith('/api/mfa/factors/')) {const factorId=url.pathname.slice('/api/mfa/factors/'.length);if(!/^[0-9a-f-]{36}$/i.test(factorId))return send(res,400,{error:'Invalid factor.'});const info=await callAuth('user',{headers:{Authorization:`Bearer ${unseal(session.access_enc,encryptionKey)}`}});if(info.status>=400||!(info.data.factors||[]).some(f=>f.id===factorId&&f.status==='unverified'))return send(res,403,{error:'Only unverified factors can be cancelled.'});const r=await callAuth(`factors/${factorId}`,{method:'DELETE',headers:{Authorization:`Bearer ${unseal(session.access_enc,encryptionKey)}`}});return send(res,r.status,r.status<400?{ok:true}:{error:r.data.message||'Could not cancel enrollment.'});}
       if (req.method==='GET' && url.pathname==='/api/mfa/recovery') {const r=await callAuth('factors/recovery-codes',{headers:{Authorization:`Bearer ${unseal(session.access_enc,encryptionKey)}`}});return send(res,r.status,r.status<400?{total:r.data.total,remaining:r.data.remaining}:{error:r.data.message||'Recovery codes are not configured.'});}
       if (req.method==='POST' && url.pathname==='/api/mfa/recovery') {const r=await callAuth('factors/recovery-codes',{method:'POST',headers:{Authorization:`Bearer ${unseal(session.access_enc,encryptionKey)}`},body:'{}'});if(r.status<400)event(session.user_id,'recovery_codes','Recovery codes generated');return send(res,r.status,r.status<400?{codes:r.data.codes}:{error:r.data.message||'Could not generate recovery codes.'});}
@@ -94,3 +95,5 @@ const server = http.createServer(async (req,res) => {
   } catch (e) { send(res,500,{error:'The request could not be completed.'}); }
 });
 server.listen(port,production?'0.0.0.0':'127.0.0.1',()=>console.log(`Lyriq ID running on http://localhost:${port}`));
+
+

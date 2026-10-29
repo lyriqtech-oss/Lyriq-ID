@@ -17,6 +17,7 @@ The provided Supabase key is kept in the local ignored `.env` file. Never commit
 ## Current functionality
 
 - Supabase Auth email/password signup and sign-in; confirmation email follows project settings.
+- Rate limits apply to the source address, account, code verification, and MFA enrollment.
 - Server-side sessions in SQLite, with encrypted access and refresh tokens, HTTP-only SameSite cookies, seven-day maximum duration, session listing and revocation.
 - Supabase Auth TOTP enrollment and challenge at sign-in. Other local sessions are revoked after adding a factor.
 - Supabase Auth recovery-code generation after MFA enrollment, if enabled on the Supabase project. Codes appear once and are not stored by this app.
@@ -32,4 +33,7 @@ Each Lyriq product needs a distinct `LYRIQ_CLIENT_<PRODUCT>_SECRET` on the Lyriq
 
 This is **not a production identity provider yet**. Passkey login, OAuth/OIDC authorization, trusted-device enrollment, agent approvals, push approvals, organization policies, and account recovery flows remain to be implemented and audited. The app uses local SQLite for session and code metadata; moving it to managed PostgreSQL with backups is necessary before multi-instance deployment. Configure HTTPS, a trusted reverse proxy, separate environment secrets, Supabase Auth rate limits, MFA enrollment settings, backups, monitoring, and external security testing before real users depend on it. The local visual preview contains illustrative information only.
 
-Run `npm run check` for syntax and cryptographic unit tests.
+For an HTTPS reverse proxy on the same machine, set `NODE_ENV=production` and `TRUST_PROXY=1`. The server accepts its HTTPS forwarding header only from a loopback connection. Keep port 3000 private behind the proxy. Production requests without a verified HTTPS connection are rejected.
+
+Run `npm run check` for syntax, cryptographic tests, and a local end-to-end test of code replay protection and session revocation.
+
